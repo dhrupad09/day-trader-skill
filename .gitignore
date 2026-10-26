@@ -1,0 +1,4 @@
+__pycache__/
+
+# Runtime output the tools write when run from the repo root
+trader/
