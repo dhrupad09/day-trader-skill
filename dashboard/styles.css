@@ -266,8 +266,17 @@ button:disabled { opacity: 0.5; cursor: wait; }
 .symbols-field { display: block; margin: 0 0 10px; color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: 0.1em; }
 .symbols-field small { font-weight: 500; letter-spacing: 0.02em; }
 .symbols-field input { display: block; width: 100%; height: 30px; margin-top: 4px; padding: 0 9px; border: 1px solid #aebdb5; color: var(--ink); background: var(--surface-raised); font-size: 11px; text-transform: uppercase; }
-.scan-fields { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 10px; }
 .alerts-heading { margin-top: 19px; }
+
+.practice-box { display: grid; gap: 3px; max-width: 250px; }
+.practice-box label { color: var(--muted); font-size: 8px; font-weight: 750; letter-spacing: 0.13em; }
+.practice-box label small { font-weight: 500; letter-spacing: 0.02em; }
+.practice-box > span { display: flex; height: 28px; border: 1px solid var(--line-strong); background: var(--surface-raised); }
+.practice-box input { min-width: 0; flex: 1; padding: 0 6px; border: 0; color: var(--ink); background: transparent; font-size: 11px; }
+.practice-box button { padding: 0 8px; border: 0; border-left: 1px solid var(--line-strong); color: var(--teal-deep); background: #f0f3f1; cursor: pointer; font-size: 9px; font-weight: 750; letter-spacing: 0.08em; }
+.practice-hint { color: var(--faint); font-size: 8px; line-height: 1.35; }
+.practice-box.active > span { border-color: #c79a4a; background: var(--amber-soft); }
+.practice-box.active label, .practice-box.active .practice-hint { color: var(--amber); }
 .heading-actions { display: flex; gap: 14px; }
 
 .activity-section { margin-top: 22px; }
@@ -324,8 +333,11 @@ button:disabled { opacity: 0.5; cursor: wait; }
 
 @media (max-width: 560px) {
   .main { padding-right: 12px; padding-left: 12px; }
-  .topbar { align-items: flex-start; min-height: 94px; padding: 17px 0 13px; }
-  .topbar-right { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .topbar { flex-wrap: wrap; align-items: flex-start; gap: 10px; min-height: 94px; padding: 17px 0 13px; }
+  .topbar-right { width: 100%; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+  .practice-box { flex: 1 1 100%; max-width: none; order: 3; }
+  .practice-box input { font-size: 14px; }
+  .symbols-field input, .symbol-field input, .card-controls select, .card-controls input { font-size: 16px; }
   .clock-box { display: none; }
   .mode-tag { min-height: 26px; font-size: 8px; }
   .summary-strip { margin-top: 12px; }

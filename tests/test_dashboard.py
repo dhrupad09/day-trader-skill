@@ -46,9 +46,19 @@ class Dashboard(unittest.TestCase):
         command = build_command({"task": "scanner-orb", "symbols": "amd, nvda tsla,amd"})
         self.assertEqual(command[-2:], ["--symbols", "AMD,NVDA,TSLA"])
         self.assertNotIn("--symbols", build_command({"task": "scanner-daily", "symbols": ""}))
-        self.assertEqual(build_command({"task": "scanner-orb", "at": "10:15"})[-2:], ["--at", "10:15"])
-        with self.assertRaises(DashboardError):
-            build_command({"task": "scanner-orb", "at": "25:00"})
+
+    def test_practice_time_reaches_only_the_clocked_tools(self):
+        for task in ("scanner-orb", "entry", "exit-plan", "timemachine", "budget", "risk", "tickets", "alerts-check"):
+            with self.subTest(task=task):
+                command = build_command({"task": task, "symbol": "AMD", "practice": "2026-11-09 10:15"})
+                self.assertEqual(command[-2:], ["--now", "2026-11-09 10:15"])
+        for task in ("news", "analyst", "scanner-daily", "pelosi-new"):
+            with self.subTest(task=task):
+                self.assertNotIn("--now", build_command({"task": task, "symbol": "AMD", "practice": "2026-11-09 10:15"}))
+        for bad in ("10:15", "2026-11-09 25:00", "2026-11-09 10:15 --write", "2026-13-01 10:00"):
+            with self.subTest(practice=bad):
+                with self.assertRaises(DashboardError):
+                    build_command({"task": "entry", "symbol": "AMD", "practice": bad})
         for bad in ("AMD;rm", ",".join("A%d" % i for i in range(101)), ["AMD"]):
             with self.subTest(symbols=bad):
                 with self.assertRaises(DashboardError):
@@ -176,6 +186,64 @@ class DashboardHTTP(unittest.TestCase):
                 response.read()
                 connection.close()
         self.assertEqual(responses, [202, 409])
+        self.assertEqual(submit.call_count, 1)
+
+
+class DashboardLAN(unittest.TestCase):
+    """--lan: another device needs the key from the printed link; this computer does not."""
+
+    def setUp(self):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.token = "secret-key"
+        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread.daemon = True
+        self.thread.start()
+        self.port = self.server.server_address[1]
+        # the test client is on loopback: pretend it is a phone on the Wi-Fi
+        self.remote = patch.object(Handler, "_loopback_client", return_value=False)
+        self.remote.start()
+
+    def tearDown(self):
+        self.remote.stop()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def get(self, path, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port)
+        connection.request("GET", path, headers=dict({"Host": "192.168.1.20:%d" % self.port}, **(headers or {})))
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        return response
+
+    def test_phone_without_the_key_is_refused(self):
+        self.assertEqual(self.get("/api/status").status, 401)
+        self.assertEqual(self.get("/?token=wrong").status, 401)
+
+    def test_link_key_becomes_a_cookie(self):
+        response = self.get("/?token=secret-key")
+        self.assertEqual(response.status, 303)
+        self.assertIn("dt_token=secret-key", response.getheader("Set-Cookie"))
+        self.assertIn("HttpOnly", response.getheader("Set-Cookie"))
+        self.assertEqual(self.get("/api/status", {"Cookie": "dt_token=secret-key"}).status, 200)
+
+    def test_named_hosts_are_still_refused(self):
+        response = self.get("/api/status", {"Host": "rebind.example:%d" % self.port, "Cookie": "dt_token=secret-key"})
+        self.assertEqual(response.status, 421)
+
+    def test_phone_can_queue_a_task_with_the_key(self):
+        origin = "http://192.168.1.20:%d" % self.port
+        with patch("dashboard.server.POOL.submit") as submit:
+            for cookie, expected in (("", 403), ("dt_token=secret-key", 202)):
+                connection = http.client.HTTPConnection("127.0.0.1", self.port)
+                connection.request("POST", "/api/run", body=json.dumps({"task": "alerts-list"}), headers={
+                    "Host": "192.168.1.20:%d" % self.port, "Origin": origin, "Cookie": cookie,
+                    "Content-Type": "application/json"})
+                response = connection.getresponse()
+                response.read()
+                connection.close()
+                self.assertEqual(response.status, expected)
         self.assertEqual(submit.call_count, 1)
 
 

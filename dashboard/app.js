@@ -38,6 +38,26 @@ function nyClock() {
   }).format(new Date());
 }
 
+// Practice time: "YYYY-MM-DDTHH:MM" from the picker, read as New York time by the tools.
+function practiceTime() {
+  const value = $("#practice-input").value;
+  return value ? value.replace("T", " ").slice(0, 16) : "";
+}
+
+function showPractice() {
+  const value = practiceTime();
+  $("#practice-box").classList.toggle("active", Boolean(value));
+  $("#practice-hint").textContent = value
+    ? "Scan, entry, plan, replay, size, risk and alerts run as of " + value + " New York."
+    : "Empty = live. Set a past time to replay a session.";
+  try {
+    if (value) window.localStorage.setItem("practice", value);
+    else window.localStorage.removeItem("practice");
+  } catch (error) {
+    // storage can be off (private browsing); the picker still works for this visit
+  }
+}
+
 function getFile(state, name) {
   return state && state.files ? state.files[name] : null;
 }
@@ -354,7 +374,8 @@ function renderRisk(orders, risk) {
     nodes.push(line);
   });
   if (risk && Array.isArray(risk.results)) {
-    const stale = risk.date && risk.date !== new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+    const today = practiceTime().slice(0, 10) || new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+    const stale = risk.date && risk.date !== today;
     setTag("#risk-card-tag", risk.block ? "BLOCK" : risk.pass ? "PASS" : "CHECKED", risk.block ? "block-tag" : "");
     risk.results.forEach((r) => {
       const verdict = el("div", "verdict " + (r.verdict === "PASS" ? "verdict-pass" : "verdict-block"));
@@ -465,8 +486,9 @@ async function watchJob(id) {
 
 async function startTask(task, button) {
   const payload = { task };
+  const practice = practiceTime();
+  if (practice) payload.practice = practice;
   if (task === "scanner-daily" || task === "scanner-orb") payload.symbols = $("#scan-symbols").value.trim();
-  if (task === "scanner-orb") payload.at = $("#scan-at").value.trim();
   if (task === "exit-plan") {
     payload.stop = $("#plan-stop").value;
     payload.target = $("#plan-target").value;
@@ -508,6 +530,18 @@ document.querySelectorAll("[data-task]").forEach((button) => {
   button.addEventListener("click", () => startTask(button.dataset.task, button));
 });
 $("#refresh-button").addEventListener("click", refreshState);
+$("#practice-input").addEventListener("change", showPractice);
+$("#practice-clear").addEventListener("click", () => {
+  $("#practice-input").value = "";
+  showPractice();
+});
+try {
+  const saved = window.localStorage.getItem("practice");
+  if (saved) $("#practice-input").value = saved.replace(" ", "T");
+} catch (error) {
+  // no storage: start live
+}
+showPractice();
 window.addEventListener("DOMContentLoaded", () => {
   nyClock();
   window.setInterval(nyClock, 1000);

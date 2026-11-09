@@ -142,8 +142,20 @@ output and any tool error appear in the run activity area.
 The Plan & odds panel draws the saved plan as a stop / entry / target ladder,
 the Time Machine's odds and fan chart (flagged when the replay is for an older
 plan), and the sized order with its risk verdict. Scans can be limited to a
-list of tickers, and an opening-range scan can be replayed at a time of day
-after the close. Saved alert rules are listed under the watchlist.
+list of tickers. Saved alert rules are listed under the watchlist.
+
+**Practice as of** (top bar) replays a past session: set a New York date and
+time, and the scan, entry, plan, replay, sizing, risk check and alerts all run
+as if it were that moment. Clear it (LIVE) to go back to the real clock. A
+risk PASS made at a practice time has already expired in real time, so it can
+never back a real order.
+
+**On your phone:** start it with `python dashboard/server.py --lan` and open
+the link it prints (`http://<this computer's IP>:8765/?token=...`) on a phone
+on the same Wi-Fi. The link carries a secret key, made fresh at each start;
+the phone keeps it as a cookie. Windows asks once whether Python may accept
+connections: allow Private networks only. Without `--lan` the dashboard is
+reachable from this computer alone.
 
 The dashboard adds no dependencies. Public data may be delayed or unofficial,
 and results are not financial advice. Keep brokerage credentials out of the

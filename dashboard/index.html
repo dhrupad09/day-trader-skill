@@ -46,6 +46,14 @@ FORM: Exchange blotter, first-ranked grounded structure, direct operator staging
         </div>
         <div class="topbar-right">
           <div class="clock-box"><span>NEW YORK TIME</span><strong id="ny-clock">--:--:--</strong></div>
+          <div id="practice-box" class="practice-box">
+            <label for="practice-input">PRACTICE AS OF <small>(New York)</small></label>
+            <span>
+              <input id="practice-input" type="datetime-local" step="300" aria-describedby="practice-hint">
+              <button id="practice-clear" type="button" title="Back to the live clock">LIVE</button>
+            </span>
+            <small id="practice-hint" class="practice-hint">Empty = live. Set a past time to replay a session.</small>
+          </div>
           <div id="account-mode" class="mode-tag unknown"><span></span><b>MODE UNKNOWN</b></div>
           <button class="icon-button" id="refresh-button" type="button" aria-label="Refresh saved outputs" title="Refresh saved outputs">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 7.3A6.6 6.6 0 0 0 4.7 5.5L3.2 7M3.2 7V3.9M3.2 7h3.1M3.8 12.7a6.6 6.6 0 0 0 11.5 1.8l1.5-1.5m0 0v3.1m0-3.1h-3.1"/></svg>
@@ -177,14 +185,9 @@ FORM: Exchange blotter, first-ranked grounded structure, direct operator staging
                 <div><h2>Watchlist</h2><p id="watchlist-caption">No saved scan results</p></div>
                 <button class="subtle-button" data-task="scanner-orb" type="button">Run opening-range scan <span>↗</span></button>
               </div>
-              <div class="scan-fields">
-                <label class="symbols-field" for="scan-symbols">SCAN ONLY THESE TICKERS <small>(empty = all ~5,900 US stocks, slow)</small>
-                  <input id="scan-symbols" type="text" autocomplete="off" placeholder="AAPL, NVDA, TSLA, AMD">
-                </label>
-                <label class="symbols-field" for="scan-at">OPENING-RANGE AS OF <small>(after the close)</small>
-                  <input id="scan-at" type="text" autocomplete="off" maxlength="5" placeholder="10:15">
-                </label>
-              </div>
+              <label class="symbols-field" for="scan-symbols">SCAN ONLY THESE TICKERS <small>(empty = all ~5,900 US stocks, slow)</small>
+                <input id="scan-symbols" type="text" autocomplete="off" placeholder="AAPL, NVDA, TSLA, AMD">
+              </label>
               <div class="watchlist-table" role="table" aria-label="Saved watchlist">
                 <div class="watchlist-head" role="row"><span role="columnheader">SYMBOL</span><span role="columnheader">SETUP</span><span role="columnheader">AS OF</span><span role="columnheader">STATUS</span></div>
                 <div id="watchlist-rows" class="empty-row" role="row">Run a scan to populate this table. A match is a chart rule, not a recommendation.</div>

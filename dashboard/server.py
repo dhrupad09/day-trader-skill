@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -13,7 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from http.cookies import SimpleCookie
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +28,11 @@ MAX_JOBS = 100
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 STOP_RE = re.compile(r"^(or-mid|or-low|(price|pct|atr):[0-9]+(\.[0-9]+)?)$")
 TARGET_RE = re.compile(r"^([0-9]+(\.[0-9]+)?R|price:[0-9]+(\.[0-9]+)?)$")
-HHMM_RE = re.compile(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$")
+PRACTICE_RE = re.compile(r"^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3]):[0-5][0-9]$")
+IPV4_RE = re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$")
+# Tasks whose tools take --now: a practice time replays them as of that New York time.
+PRACTICE_TASKS = ("scanner-orb", "entry", "exit-plan", "timemachine", "budget", "risk", "tickets", "alerts-check")
+TOKEN_COOKIE = "dt_token"
 MAX_SYMBOLS = 100
 JOBS = {}
 JOBS_LOCK = threading.Lock()
@@ -132,9 +138,6 @@ def build_command(payload):
         symbols = _symbols(payload.get("symbols"))
         if symbols:
             args += ["--symbols", ",".join(symbols)]
-        at = _option(payload, "at", HHMM_RE, "Replay time is New York HH:MM, like 10:15.")
-        if at and task == "scanner-orb":
-            args += ["--at", at]
     elif task == "exit-plan":
         args = ["trader-exit/exit.py", "plan", "--write"]
         stop = _option(payload, "stop", STOP_RE, "Stop is or-mid, or-low, price:X, pct:X or atr:K.")
@@ -152,6 +155,10 @@ def build_command(payload):
         args = commands[task]
     else:
         raise DashboardError("That dashboard task is not available.")
+
+    practice = _option(payload, "practice", PRACTICE_RE, "Practice time is a New York date and time, like 2026-11-09 10:15.")
+    if practice and task in PRACTICE_TASKS:
+        args += ["--now", practice]
 
     script, *arguments = args
     return [sys.executable, str(ROOT / script), *arguments]
@@ -248,7 +255,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self._local_host():
             self._json(421, {"error": "Open the dashboard at its 127.0.0.1 address."})
             return
-        path = urlparse(self.path).path
+        url = urlparse(self.path)
+        path = url.path
+        token = self._token()
+        if token and not self._has_token(token):
+            given = parse_qs(url.query).get("token", [""])[0]
+            if path == "/" and secrets.compare_digest(given, token):
+                # Trade the link's key for a cookie, then drop it from the address bar.
+                self.send_response(303)
+                self.send_header("Set-Cookie", "%s=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000"
+                                 % (TOKEN_COOKIE, token))
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                self._json(401, {"error": "Open the dashboard with the link the server printed (it carries the key)."})
+            return
         if path == "/api/status":
             self._json(200, read_state())
         elif path == "/":
@@ -266,7 +288,8 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(self.path).path != "/api/run":
             self._json(404, {"error": "Not found."})
             return
-        if not self._local_host() or not self._same_origin():
+        token = self._token()
+        if not self._local_host() or not self._same_origin() or (token and not self._has_token(token)):
             self._json(403, {"error": "Dashboard tasks must come from this local dashboard."})
             return
         try:
@@ -313,11 +336,35 @@ class Handler(BaseHTTPRequestHandler):
         POOL.submit(_run_job, job_id, command)
         self._json(202, {"id": job_id, "status": "queued"})
 
+    def _lan(self):
+        return bool(getattr(self.server, "token", None))
+
+    def _loopback_client(self):
+        return self.client_address[0] in ("127.0.0.1", "::1")
+
+    def _token(self):
+        """The key a request must carry: only on a --lan server, and only from another device."""
+        return None if self._loopback_client() else getattr(self.server, "token", None)
+
+    def _has_token(self, token):
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return False
+        morsel = cookie.get(TOKEN_COOKIE)
+        return bool(morsel) and secrets.compare_digest(morsel.value, token)
+
     def _local_host(self):
-        """The Host header must name this server on loopback. A page on another site that
-        re-points its own domain at 127.0.0.1 (DNS rebinding) still sends its own Host."""
+        """The Host header must name this server by loopback (or, with --lan, by an IP
+        address). A page on another site that re-points its own domain here (DNS
+        rebinding) still sends its own domain name as the Host."""
         port = self.server.server_address[1]
-        return self.headers.get("Host", "") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+        host = self.headers.get("Host", "")
+        if host in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+            return True
+        name, _, host_port = host.rpartition(":")
+        return self._lan() and host_port == str(port) and bool(IPV4_RE.fullmatch(name))
 
     def _same_origin(self):
         origin = self.headers.get("Origin")
@@ -326,12 +373,11 @@ class Handler(BaseHTTPRequestHandler):
             return False
         try:
             parsed = urlparse(origin)
-            return (
-                parsed.scheme == "http"
-                and parsed.hostname in ("127.0.0.1", "localhost")
-                and parsed.netloc == host
-                and self.client_address[0] in ("127.0.0.1", "::1")
-            )
+            if parsed.scheme != "http" or parsed.netloc != host:
+                return False
+            if parsed.hostname in ("127.0.0.1", "localhost"):
+                return self._loopback_client()
+            return self._lan() and bool(IPV4_RE.fullmatch(parsed.hostname or ""))
         except ValueError:
             return False
 
@@ -367,15 +413,35 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
 
+def _lan_ip():
+    """This computer's address on the home network. A UDP connect picks the outgoing
+    interface without sending anything."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))
+        return probe.getsockname()[0]
+    except OSError:
+        return "<this-computer's-IP>"
+    finally:
+        probe.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the local day-trading dashboard.")
     parser.add_argument("--port", type=int, default=8765, help="Local port to use (default: 8765)")
+    parser.add_argument("--lan", action="store_true",
+                        help="also serve your home network (phone, tablet), behind a secret key in the link")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error("--port must be between 1024 and 65535")
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0" if args.lan else "127.0.0.1", args.port), Handler)
+    server.token = secrets.token_urlsafe(18) if args.lan else None
     print("Dashboard available at http://127.0.0.1:%d" % args.port)
-    print("Local only. Broker orders are not available in this dashboard.")
+    if args.lan:
+        print("On your phone (same Wi-Fi), open:  http://%s:%d/?token=%s" % (_lan_ip(), args.port, server.token))
+        print("Anyone with that link on your network can run the analysis tools. A new key is made each start.")
+    else:
+        print("Local only. Broker orders are not available in this dashboard.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
