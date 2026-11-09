@@ -139,9 +139,17 @@ risk, alert, analyst and public-disclosure tools. It listens on loopback only;
 broker tickets are view-only, and it cannot place or approve orders. A task's
 output and any tool error appear in the run activity area.
 
+The Plan & odds panel draws the saved plan as a stop / entry / target ladder,
+the Time Machine's odds and fan chart (flagged when the replay is for an older
+plan), and the sized order with its risk verdict. Scans can be limited to a
+list of tickers, and an opening-range scan can be replayed at a time of day
+after the close. Saved alert rules are listed under the watchlist.
+
 The dashboard adds no dependencies. Public data may be delayed or unofficial,
 and results are not financial advice. Keep brokerage credentials out of the
 dashboard and chat.
+
+### Command line
 
 ```bash
 python3 trader-scanner/scan.py universe                                # ~5,900 US stocks, Nasdaq Trader

@@ -39,7 +39,8 @@ class Repo(unittest.TestCase):
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
+        # trader/ is the tools' runtime output (gitignored), not part of the repo
+        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git") and d != "trader")
         self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "PRODUCT.md",
                                        "DESIGN.md", "dashboard", "tests"] + SKILLS))
 

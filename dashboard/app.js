@@ -14,8 +14,15 @@ const taskNames = {
   "alerts-clock": "NYSE clock",
   "alerts-list": "Alert rules",
   analyst: "Earnings analyst",
-  pelosi: "Public disclosure tracker"
+  pelosi: "Pelosi filings",
+  "pelosi-new": "New Congress filings",
+  quote: "Quote",
+  "alerts-plan": "Plan alerts",
+  universe: "Stock universe"
 };
+const symbolTasks = ["news", "entry", "analyst", "quote"];
+const workflowFiles = ["watchlist.json", "entry.json", "plan.json", "timemachine.json", "orders.json", "state/risk.json"];
+const SVG_NS = "http://www.w3.org/2000/svg";
 const activityItems = new Map();
 const runningJobs = new Set();
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -74,7 +81,8 @@ function defaultRowLabel(filename) {
     "entry.json": "No entry check",
     "plan.json": "No plan",
     "timemachine.json": "No replay",
-    "orders.json": "No order proposal"
+    "orders.json": "No order proposal",
+    "state/risk.json": "No risk verdict"
   };
   return labels[filename] || "Not saved";
 }
@@ -123,12 +131,23 @@ function updateDashboard(state) {
     : "Exit plans are read from trader/plan.json";
 
   const watchCount = hits.length;
-  $("#workflow-count").textContent = existing.filter((key) => ["watchlist.json", "entry.json", "plan.json", "timemachine.json", "orders.json"].includes(key)).length + " / 5 FILES";
+  const replay = getFile(state, "timemachine.json");
+  const replayData = replay && replay.data;
+  const risk = getFile(state, "state/risk.json");
+  const riskData = risk && risk.data;
+  const orderList = orderData && Array.isArray(orderData.orders) ? orderData.orders : [];
+  $("#workflow-count").textContent = existing.filter((key) => workflowFiles.includes(key)).length + " / " + workflowFiles.length + " FILES";
   updateWorkflowRow("watchlist.json", Boolean(scan && scan.exists), watchCount + " matched");
-  updateWorkflowRow("entry.json", Boolean(entry && entry.exists), entryData && entryData.status ? String(entryData.status).toUpperCase() : entryData && entryData.symbol ? entryData.symbol + " checked" : "Entry checked");
+  updateWorkflowRow("entry.json", Boolean(entry && entry.exists), entryData && entryData.status ? [entryData.symbol, String(entryData.status).toUpperCase()].filter(Boolean).join(" ") : "Entry checked");
   updateWorkflowRow("plan.json", Boolean(plan && plan.exists), planSymbol ? planSymbol + " planned" : "Plan saved");
-  updateWorkflowRow("timemachine.json", Boolean(getFile(state, "timemachine.json") && getFile(state, "timemachine.json").exists), "Replay saved");
-  updateWorkflowRow("orders.json", Boolean(orders && orders.exists), Array.isArray(orderData) ? orderData.length + " proposed" : "Proposal saved");
+  updateWorkflowRow("timemachine.json", Boolean(replay && replay.exists), replayData && replayData.mc ? pct(replayData.mc.p_target) + " target first" : "Replay saved");
+  updateWorkflowRow("orders.json", Boolean(orders && orders.exists), orderList.length + " proposed");
+  updateWorkflowRow("state/risk.json", Boolean(risk && risk.exists), riskData ? riskData.pass + " pass · " + riskData.block + " block" : "Verdict saved");
+  renderPlan(planData);
+  renderReplay(replayData, planData);
+  renderRisk(orderList, riskData);
+  const alertFile = getFile(state, "alerts.json");
+  renderAlerts(alertFile && alertFile.data && Array.isArray(alertFile.data.rules) ? alertFile.data.rules : []);
 
   $("#watchlist-caption").textContent = scan && scan.exists
     ? [watchCount + " matched", scanData.as_of ? "as of " + formatTime(scanData.as_of) : null, scanData.failed ? scanData.failed + " unavailable" : null].filter(Boolean).join(" · ")
@@ -140,6 +159,7 @@ function updateDashboard(state) {
 
 function renderWatchlist(hits) {
   const container = $("#watchlist-rows");
+  container.className = "";
   container.replaceChildren();
   if (!hits.length) {
     const empty = document.createElement("div");
@@ -174,6 +194,202 @@ function renderWatchlist(hits) {
     more.textContent = (hits.length - 8) + " more matches in trader/watchlist.json";
     container.append(more);
   }
+}
+
+function pct(value) {
+  return value == null ? "—" : (value * 100).toFixed(1) + "%";
+}
+
+function money(value) {
+  return value == null || Number.isNaN(Number(value)) ? "—" : "$" + Number(value).toFixed(2);
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function setTag(id, text, tone) {
+  const tag = $(id);
+  tag.textContent = text;
+  tag.className = "row-tag " + (tone || "muted-tag");
+}
+
+function empty(container, message) {
+  container.replaceChildren(el("p", "card-empty", message));
+}
+
+function stat(label, value) {
+  const cell = el("div", "stat");
+  cell.append(el("span", null, label), el("b", null, value));
+  return cell;
+}
+
+function renderPlan(plan) {
+  const ladder = $("#plan-ladder");
+  if (!plan || plan.entry == null) {
+    setTag("#plan-card-tag", "NONE");
+    empty(ladder, "Check an entry, then build a plan. The stop and target are set before any order.");
+    return;
+  }
+  setTag("#plan-card-tag", [plan.symbol, plan.date].filter(Boolean).join(" · "), "");
+  const levels = [
+    ["TARGET", plan.target, plan.target_label, "level-target"],
+    ["ENTRY", plan.entry, plan.entry_time ? "at " + plan.entry_time : "", "level-entry"],
+    ["STOP", plan.stop, plan.stop_label, "level-stop"]
+  ];
+  const rows = levels.map(([name, price, note, tone]) => {
+    const row = el("div", "ladder-row " + tone);
+    row.append(el("span", "ladder-name", name), el("b", null, money(price)), el("small", null, note || ""));
+    return row;
+  });
+  const stats = el("div", "stat-row");
+  stats.append(
+    stat("RISK / SHARE", money(plan.risk_per_share)),
+    stat("REWARD : RISK", plan.reward_risk != null ? String(plan.reward_risk) : "—"),
+    stat("FLAT BY", plan.flat_by ? plan.flat_by + " ET" : "—")
+  );
+  ladder.replaceChildren(...rows, stats);
+}
+
+function fanChart(mc, plan) {
+  // bands: one row per bar after the entry, [p5, p25, p50, p75, p95]
+  const bands = mc.bands;
+  const width = 320;
+  const height = 120;
+  const lows = bands.map((b) => b[0]).concat(plan ? [plan.stop] : []);
+  const highs = bands.map((b) => b[4]).concat(plan ? [plan.target] : []);
+  const lo = Math.min(...lows);
+  const hi = Math.max(...highs);
+  const x = (i) => (i / Math.max(1, bands.length - 1)) * width;
+  const y = (v) => height - ((v - lo) / Math.max(1e-9, hi - lo)) * height;
+  const area = (a, b) => bands.map((r, i) => x(i) + "," + y(r[a])).join(" ") + " " +
+    bands.map((r, i) => [i, r]).reverse().map(([i, r]) => x(i) + "," + y(r[b])).join(" ");
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+  svg.setAttribute("class", "fan-chart");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Range of replayed prices from the entry to the close");
+  const add = (name, attrs) => {
+    const node = document.createElementNS(SVG_NS, name);
+    Object.entries(attrs).forEach(([k, v]) => node.setAttribute(k, v));
+    svg.append(node);
+  };
+  add("polygon", { points: area(0, 4), class: "fan-outer" });
+  add("polygon", { points: area(1, 3), class: "fan-inner" });
+  add("polyline", { points: bands.map((r, i) => x(i) + "," + y(r[2])).join(" "), class: "fan-median" });
+  if (plan) {
+    [["target", plan.target], ["entry", plan.entry], ["stop", plan.stop]].forEach(([name, v]) => {
+      if (v != null) add("line", { x1: 0, x2: width, y1: y(v), y2: y(v), class: "fan-level fan-" + name });
+    });
+  }
+  return svg;
+}
+
+function renderReplay(replay, plan) {
+  const body = $("#tm-body");
+  if (!replay || !replay.mc) {
+    setTag("#tm-card-tag", "NO REPLAY");
+    empty(body, "Replay the saved plan 10,000 times from the stock's own recent bars.");
+    return;
+  }
+  const mc = replay.mc;
+  const replayPlan = replay.plan && replay.plan.entry != null ? replay.plan : plan;
+  const stale = plan && replay.plan && ["symbol", "date", "entry", "stop", "target"].some((k) => plan[k] !== replay.plan[k]);
+  setTag("#tm-card-tag", stale ? "OLDER PLAN" : mc.replays.toLocaleString() + " RUNS · SEED " + mc.seed, stale ? "block-tag" : "");
+  const bar = el("div", "odds-bar");
+  [["odds-target", mc.p_target], ["odds-neither", mc.p_neither], ["odds-stop", mc.p_stop]].forEach(([cls, p]) => {
+    const seg = el("span", cls);
+    seg.style.width = Math.max(0, p * 100) + "%";
+    bar.append(seg);
+  });
+  const legend = el("div", "odds-legend");
+  legend.append(
+    el("span", "key-target", "Target first " + pct(mc.p_target)),
+    el("span", "key-neither", "Neither " + pct(mc.p_neither)),
+    el("span", "key-stop", "Stop first " + pct(mc.p_stop))
+  );
+  const stats = el("div", "stat-row");
+  stats.append(
+    stat("GREEN", pct(mc.p_green)),
+    stat("AVG R", mc.avg_R != null ? (mc.avg_R > 0 ? "+" : "") + mc.avg_R.toFixed(3) : "—"),
+    stat("CLOSE 90% RANGE", money(mc.p5_close) + " – " + money(mc.p95_close))
+  );
+  const nodes = stale
+    ? [el("p", "card-verdict", "This replay is for an older plan (stop " + money(replay.plan.stop) + ", target " +
+        money(replay.plan.target) + "). Run the replay again for the saved plan.")]
+    : [];
+  nodes.push(bar, legend);
+  if (Array.isArray(mc.bands) && mc.bands.length > 1) nodes.push(fanChart(mc, replayPlan));
+  nodes.push(stats);
+  const h = replay.history;
+  if (h && h.sessions) {
+    nodes.push(el("p", "card-note", "History: fired " + h.triggered + " of " + h.sessions + " sessions — " +
+      h.target + " target, " + h.stop + " stop, " + h.close + " neither (avg R " + h.avg_R + ")."));
+  }
+  if (replay.verdict) nodes.push(el("p", "card-verdict", replay.verdict));
+  body.replaceChildren(...nodes);
+}
+
+function renderRisk(orders, risk) {
+  const body = $("#risk-body");
+  if (!orders.length && !risk) {
+    setTag("#risk-card-tag", "UNCHECKED");
+    empty(body, "Size the plan, then run the risk check. Placing an order stays in the chat, with your yes.");
+    return;
+  }
+  const nodes = [];
+  orders.forEach((order) => {
+    const line = el("div", "order-line");
+    const plan = order.plan || {};
+    line.append(
+      el("b", null, [String(order.side || "").toUpperCase(), order.qty || order.notional, order.symbol].filter(Boolean).join(" ")),
+      el("span", null, [order.type, order.order_class].filter(Boolean).join(" · ")),
+      el("small", null, "stop " + (order.stop_loss_stop_price || "—") + " · target " + (order.take_profit_limit_price || "—") +
+        (plan.max_loss != null ? " · max loss " + money(plan.max_loss) : ""))
+    );
+    nodes.push(line);
+  });
+  if (risk && Array.isArray(risk.results)) {
+    const stale = risk.date && risk.date !== new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+    setTag("#risk-card-tag", risk.block ? "BLOCK" : risk.pass ? "PASS" : "CHECKED", risk.block ? "block-tag" : "");
+    risk.results.forEach((r) => {
+      const verdict = el("div", "verdict " + (r.verdict === "PASS" ? "verdict-pass" : "verdict-block"));
+      verdict.append(el("b", null, r.verdict + "  " + r.symbol + " " + (r.amount || "")));
+      (r.reasons || []).concat(r.warnings || []).forEach((reason) => verdict.append(el("small", null, reason)));
+      nodes.push(verdict);
+    });
+    nodes.push(el("p", "card-note", "Checked " + (risk.now_new_york || risk.date) + " New York" +
+      (stale ? " — not today; run the check again." : risk.pass ? ". A PASS expires after 15 minutes." : ".")));
+  } else {
+    setTag("#risk-card-tag", "UNCHECKED");
+    nodes.push(el("p", "card-note", "Not risk-checked yet."));
+  }
+  body.replaceChildren(...nodes);
+}
+
+function renderAlerts(rules) {
+  const container = $("#alert-rows");
+  $("#alerts-caption").textContent = rules.length ? rules.length + " rule" + (rules.length === 1 ? "" : "s") + " in trader/alerts.json" : "No alert rules saved";
+  if (!rules.length) {
+    container.replaceChildren(el("div", "empty-row", "Build a plan, then add its stop, target and flat-by alerts."));
+    return;
+  }
+  container.replaceChildren(...rules.map((rule) => {
+    const row = el("div", "watch-row");
+    row.setAttribute("role", "row");
+    const level = rule.price != null ? money(rule.price) : rule.pct != null ? rule.pct + "%" : rule.at ? rule.at + " ET" : "—";
+    row.append(
+      el("strong", "ticker-name", rule.symbol || "NYSE"),
+      el("span", null, rule.label || rule.type || "rule"),
+      el("span", null, level),
+      el("span", "row-tag", rule.date || "ANY DAY")
+    );
+    return row;
+  }));
 }
 
 async function refreshState() {
@@ -249,7 +465,14 @@ async function watchJob(id) {
 
 async function startTask(task, button) {
   const payload = { task };
-  if (["news", "entry", "analyst"].includes(task)) {
+  if (task === "scanner-daily" || task === "scanner-orb") payload.symbols = $("#scan-symbols").value.trim();
+  if (task === "scanner-orb") payload.at = $("#scan-at").value.trim();
+  if (task === "exit-plan") {
+    payload.stop = $("#plan-stop").value;
+    payload.target = $("#plan-target").value;
+  }
+  if (task === "timemachine") payload.seed = $("#tm-seed").value.trim();
+  if (symbolTasks.includes(task)) {
     const symbol = $("#symbol-input").value.trim().toUpperCase();
     if (!symbol) {
       $("#symbol-input").focus();

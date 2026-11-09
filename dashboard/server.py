@@ -24,6 +24,10 @@ MAX_STATE_BYTES = 512 * 1024
 MAX_OUTPUT_CHARS = 12000
 MAX_JOBS = 100
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
+STOP_RE = re.compile(r"^(or-mid|or-low|(price|pct|atr):[0-9]+(\.[0-9]+)?)$")
+TARGET_RE = re.compile(r"^([0-9]+(\.[0-9]+)?R|price:[0-9]+(\.[0-9]+)?)$")
+HHMM_RE = re.compile(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$")
+MAX_SYMBOLS = 100
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 POOL = ThreadPoolExecutor(max_workers=2)
@@ -31,7 +35,6 @@ POOL = ThreadPoolExecutor(max_workers=2)
 STATE_FILES = (
     "config.json",
     "watchlist.json",
-    "news.json",
     "entry.json",
     "plan.json",
     "timemachine.json",
@@ -40,6 +43,8 @@ STATE_FILES = (
     "prices.json",
     "metrics.json",
     "universe.txt",
+    "alerts.json",
+    "state/news.json",
     "state/risk.json",
     "state/broker.json",
     "state/alerts.json",
@@ -60,6 +65,37 @@ def _ticker(value):
     return symbol
 
 
+def _symbols(value):
+    """Optional comma-separated tickers for a scan; empty means the whole universe."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, str):
+        raise DashboardError("Symbols must be a comma-separated list.")
+    symbols = [_ticker(part) for part in value.replace(" ", ",").split(",") if part.strip()]
+    if len(symbols) > MAX_SYMBOLS:
+        raise DashboardError("Scan at most %d symbols at once, or leave the list empty for the universe." % MAX_SYMBOLS)
+    return list(dict.fromkeys(symbols))
+
+
+def _option(payload, key, pattern, message):
+    value = payload.get(key)
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not pattern.fullmatch(value.strip()):
+        raise DashboardError(message)
+    return value.strip()
+
+
+def _seed(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10 ** 9:
+        raise DashboardError("Seed must be a whole number from 0 to 1,000,000,000.")
+    return value
+
+
 def build_command(payload):
     """Translate a small task vocabulary into fixed local Python commands."""
     if not isinstance(payload, dict):
@@ -69,27 +105,49 @@ def build_command(payload):
     if not isinstance(task, str):
         raise DashboardError("Choose a supported dashboard task.")
     commands = {
-        "scanner-daily": ["trader-scanner/scan.py", "daily"],
-        "scanner-orb": ["trader-scanner/scan.py", "orb"],
-        "exit-plan": ["trader-exit/exit.py", "plan", "--write"],
-        "timemachine": ["trader-timemachine/timemachine.py", "run", "--write"],
+        "universe": ["trader-scanner/scan.py", "universe"],
         "budget": ["trader-budget/size.py", "--write"],
-        "risk": ["trader-risk/check.py", "--json"],
+        "risk": ["trader-risk/check.py"],
         "tickets": ["trader-broker/ticket.py", "show"],
         "alerts-check": ["trader-alerts/alerts.py", "check"],
         "alerts-clock": ["trader-alerts/alerts.py", "clock"],
         "alerts-list": ["trader-alerts/alerts.py", "list"],
+        "alerts-plan": ["trader-alerts/alerts.py", "add", "--from-plan"],
         "pelosi": ["trader-pelosi/ptr.py", "index", "--member", "pelosi"],
+        "pelosi-new": ["trader-pelosi/ptr.py", "new", "--year", str(datetime.now().year)],
     }
 
-    if task in ("news", "entry", "analyst"):
+    if task in ("news", "entry", "analyst", "quote"):
         symbol = _ticker(payload.get("symbol"))
         if task == "news":
             args = ["trader-news/news.py", "--tickers", symbol]
         elif task == "entry":
             args = ["trader-entry/entry.py", "check", symbol, "--write"]
+        elif task == "quote":
+            args = ["trader-alerts/alerts.py", "quote", symbol, "--write"]
         else:
-            args = ["trader-analyst/facts.py", symbol, "--json"]
+            args = ["trader-analyst/facts.py", symbol]
+    elif task in ("scanner-daily", "scanner-orb"):
+        args = ["trader-scanner/scan.py", "daily" if task == "scanner-daily" else "orb"]
+        symbols = _symbols(payload.get("symbols"))
+        if symbols:
+            args += ["--symbols", ",".join(symbols)]
+        at = _option(payload, "at", HHMM_RE, "Replay time is New York HH:MM, like 10:15.")
+        if at and task == "scanner-orb":
+            args += ["--at", at]
+    elif task == "exit-plan":
+        args = ["trader-exit/exit.py", "plan", "--write"]
+        stop = _option(payload, "stop", STOP_RE, "Stop is or-mid, or-low, price:X, pct:X or atr:K.")
+        target = _option(payload, "target", TARGET_RE, "Target is an R multiple like 2R, or price:X.")
+        if stop:
+            args += ["--stop", stop]
+        if target:
+            args += ["--target", target]
+    elif task == "timemachine":
+        args = ["trader-timemachine/timemachine.py", "run", "--write"]
+        seed = _seed(payload.get("seed"))
+        if seed is not None:
+            args += ["--seed", str(seed)]
     elif task in commands:
         args = commands[task]
     else:
@@ -187,6 +245,9 @@ class Handler(BaseHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        if not self._local_host():
+            self._json(421, {"error": "Open the dashboard at its 127.0.0.1 address."})
+            return
         path = urlparse(self.path).path
         if path == "/api/status":
             self._json(200, read_state())
@@ -205,7 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(self.path).path != "/api/run":
             self._json(404, {"error": "Not found."})
             return
-        if not self._same_origin():
+        if not self._local_host() or not self._same_origin():
             self._json(403, {"error": "Dashboard tasks must come from this local dashboard."})
             return
         try:
@@ -224,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
 
         job_id = secrets.token_urlsafe(9)
         with JOBS_LOCK:
-            job_key = (payload["task"], payload.get("symbol", "").strip().upper())
+            job_key = tuple(command[1:])
             if any(
                 job.get("key") == job_key and job.get("status") in ("queued", "running")
                 for job in JOBS.values()
@@ -251,6 +312,12 @@ class Handler(BaseHTTPRequestHandler):
             }
         POOL.submit(_run_job, job_id, command)
         self._json(202, {"id": job_id, "status": "queued"})
+
+    def _local_host(self):
+        """The Host header must name this server on loopback. A page on another site that
+        re-points its own domain at 127.0.0.1 (DNS rebinding) still sends its own Host."""
+        port = self.server.server_address[1]
+        return self.headers.get("Host", "") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
 
     def _same_origin(self):
         origin = self.headers.get("Origin")

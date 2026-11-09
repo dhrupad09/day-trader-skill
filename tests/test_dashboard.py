@@ -25,6 +25,10 @@ class Dashboard(unittest.TestCase):
             "alerts-list": ("trader-alerts", "alerts.py"),
             "analyst": ("trader-analyst", "facts.py"),
             "pelosi": ("trader-pelosi", "ptr.py"),
+            "pelosi-new": ("trader-pelosi", "ptr.py"),
+            "quote": ("trader-alerts", "alerts.py"),
+            "alerts-plan": ("trader-alerts", "alerts.py"),
+            "universe": ("trader-scanner", "scan.py"),
         }
         for task, expected in cases.items():
             with self.subTest(task=task):
@@ -37,6 +41,28 @@ class Dashboard(unittest.TestCase):
         self.assertIn("TSLA", command)
         with self.assertRaises(DashboardError):
             build_command({"task": "news", "symbol": "TSLA; whoami"})
+
+    def test_scan_symbols_are_checked_and_joined(self):
+        command = build_command({"task": "scanner-orb", "symbols": "amd, nvda tsla,amd"})
+        self.assertEqual(command[-2:], ["--symbols", "AMD,NVDA,TSLA"])
+        self.assertNotIn("--symbols", build_command({"task": "scanner-daily", "symbols": ""}))
+        self.assertEqual(build_command({"task": "scanner-orb", "at": "10:15"})[-2:], ["--at", "10:15"])
+        with self.assertRaises(DashboardError):
+            build_command({"task": "scanner-orb", "at": "25:00"})
+        for bad in ("AMD;rm", ",".join("A%d" % i for i in range(101)), ["AMD"]):
+            with self.subTest(symbols=bad):
+                with self.assertRaises(DashboardError):
+                    build_command({"task": "scanner-daily", "symbols": bad})
+
+    def test_plan_and_replay_options_are_allowlisted(self):
+        command = build_command({"task": "exit-plan", "stop": "pct:1.5", "target": "3R"})
+        self.assertEqual(command[-4:], ["--stop", "pct:1.5", "--target", "3R"])
+        self.assertEqual(build_command({"task": "timemachine", "seed": "7"})[-2:], ["--seed", "7"])
+        for payload in ({"task": "exit-plan", "stop": "--write=/etc/x"}, {"task": "exit-plan", "target": "2R; x"},
+                        {"task": "timemachine", "seed": "-1"}, {"task": "timemachine", "seed": True}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(DashboardError):
+                    build_command(payload)
 
     def test_unknown_and_non_string_tasks_are_rejected(self):
         for payload in ({"task": "anything"}, {"task": []}, []):
@@ -115,6 +141,21 @@ class DashboardHTTP(unittest.TestCase):
         self.assertEqual(response.status, 403)
         self.assertIn("local dashboard", payload["error"])
         submit.assert_not_called()
+
+    def test_foreign_host_cannot_read_status(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port)
+        connection.request("GET", "/api/status", headers={"Host": "rebind.example:%d" % self.port})
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        self.assertEqual(response.status, 421)
+
+        connection = http.client.HTTPConnection("127.0.0.1", self.port)
+        connection.request("GET", "/api/status")
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        self.assertEqual(response.status, 200)
 
     def test_duplicate_task_input_is_rejected_while_queued(self):
         with patch("dashboard.server.POOL.submit") as submit:
